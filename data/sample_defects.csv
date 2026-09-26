@@ -1,0 +1,7 @@
+defect_id,module,title,severity,status,root_cause
+DEF-1001,KYC,Document upload silently fails for HEIC images,Major,Closed,Missing MIME type validation
+DEF-1002,Login,Account lockout message leaks whether username exists,Minor,Closed,Information disclosure in error message
+DEF-1003,Payments,Duplicate payment submitted on double-click of Pay button,Critical,Closed,Missing idempotency key
+DEF-1004,KYC,Manual review queue does not show rejection reason to agent,Major,Closed,Missing field in admin UI
+DEF-1005,Notifications,Notification email sent twice for same KYC approval event,Minor,Closed,Missing event de-duplication
+DEF-1006,Fraud,Fraud score not recalculated after address change,Major,Open,Business rule gap

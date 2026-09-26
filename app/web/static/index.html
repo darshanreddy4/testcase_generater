@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AI QA Test Design Agent</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; }
+  .tabs { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  .tabs button { padding: .5rem 1rem; border: 1px solid #8884; background: transparent; border-radius: 6px; cursor: pointer; }
+  .tabs button.active { background: #2563eb; color: white; border-color: #2563eb; }
+  textarea, input[type=text] { width: 100%; box-sizing: border-box; padding: .6rem; border-radius: 6px; border: 1px solid #8888; font-family: inherit; }
+  textarea { min-height: 160px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  button.submit { margin-top: 1rem; padding: .7rem 1.4rem; background: #16a34a; color: white; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+  button.submit:disabled { opacity: .5; cursor: wait; }
+  .stats { display: flex; gap: 1.5rem; margin: 1rem 0; flex-wrap: wrap; }
+  .stat { background: #8882; padding: .6rem 1rem; border-radius: 8px; }
+  .downloads a { margin-right: 1rem; }
+  pre.report { white-space: pre-wrap; background: #8881; padding: 1rem; border-radius: 8px; max-height: 600px; overflow: auto; }
+  #status { margin-top: .75rem; font-style: italic; }
+  #error { color: #dc2626; margin-top: .75rem; }
+</style>
+</head>
+<body>
+  <h1>🧪 AI QA Test Design Agent</h1>
+  <p>Senior QA Architect · SDET · Business Analyst — generates full enterprise test coverage from any requirement.</p>
+
+  <div class="tabs">
+    <button data-tab="text" class="active">Paste Text</button>
+    <button data-tab="file">Upload Document</button>
+    <button data-tab="jira">Jira Issue</button>
+  </div>
+
+  <form id="form">
+    <div class="panel active" data-panel="text">
+      <textarea name="text" placeholder="e.g. Users should be able to upload a driver's license and complete identity verification..."></textarea>
+    </div>
+    <div class="panel" data-panel="file">
+      <input type="file" name="file" accept=".txt,.md,.csv,.docx,.pdf,.xlsx,.xls,.png,.jpg,.jpeg" />
+    </div>
+    <div class="panel" data-panel="jira">
+      <input type="text" name="jira_key" placeholder="e.g. PROJ-1234" />
+    </div>
+    <div style="margin-top:1rem">
+      <input type="text" name="title" placeholder="Optional report title override" />
+    </div>
+    <button class="submit" type="submit">Generate Test Assets</button>
+  </form>
+
+  <div id="status"></div>
+  <div id="error"></div>
+
+  <div id="results" style="display:none">
+    <h2 id="resultTitle"></h2>
+    <div class="stats" id="stats"></div>
+    <div class="downloads" id="downloads"></div>
+    <h3>Full Report</h3>
+    <pre class="report" id="reportPreview"></pre>
+  </div>
+
+  <script>
+    const tabs = document.querySelectorAll('.tabs button');
+    tabs.forEach(btn => btn.addEventListener('click', () => {
+      tabs.forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelector(`.panel[data-panel="${btn.dataset.tab}"]`).classList.add('active');
+    }));
+
+    const form = document.getElementById('form');
+    const statusEl = document.getElementById('status');
+    const errorEl = document.getElementById('error');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.textContent = '';
+      document.getElementById('results').style.display = 'none';
+      const submitBtn = form.querySelector('button.submit');
+      submitBtn.disabled = true;
+      statusEl.textContent = 'Running multi-stage QA analysis... this can take a minute or two.';
+
+      const activeTab = document.querySelector('.tabs button.active').dataset.tab;
+      const fd = new FormData();
+      const title = form.querySelector('input[name=title]').value;
+      if (title) fd.append('title', title);
+
+      if (activeTab === 'text') {
+        fd.append('text', form.querySelector('textarea[name=text]').value);
+      } else if (activeTab === 'file') {
+        const f = form.querySelector('input[name=file]').files[0];
+        if (!f) { errorEl.textContent = 'Choose a file first.'; submitBtn.disabled = false; statusEl.textContent=''; return; }
+        fd.append('file', f);
+      } else {
+        fd.append('jira_key', form.querySelector('input[name=jira_key]').value);
+      }
+
+      try {
+        const resp = await fetch('/api/generate', { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Generation failed.');
+
+        document.getElementById('resultTitle').textContent = data.title;
+        const stats = document.getElementById('stats');
+        stats.innerHTML = '';
+        for (const [k, v] of Object.entries(data.counts)) {
+          const div = document.createElement('div');
+          div.className = 'stat';
+          div.textContent = `${k.replaceAll('_',' ')}: ${v}`;
+          stats.appendChild(div);
+        }
+        const dl = document.getElementById('downloads');
+        dl.innerHTML = '';
+        for (const [k, v] of Object.entries(data.downloads)) {
+          const a = document.createElement('a');
+          a.href = v; a.textContent = `Download ${k}`;
+          dl.appendChild(a);
+        }
+        document.getElementById('reportPreview').textContent = data.report_markdown;
+        document.getElementById('results').style.display = 'block';
+        statusEl.textContent = 'Done.';
+      } catch (err) {
+        errorEl.textContent = err.message;
+        statusEl.textContent = '';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
