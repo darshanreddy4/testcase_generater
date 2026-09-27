@@ -49,6 +49,9 @@ class Settings:
     jira_base_url: str = field(default_factory=lambda: os.getenv("JIRA_BASE_URL", ""))
     jira_email: str = field(default_factory=lambda: os.getenv("JIRA_EMAIL", ""))
     jira_api_token: str = field(default_factory=lambda: os.getenv("JIRA_API_TOKEN", ""))
+    # How many sibling issues (other cards under the same immediate parent/epic) to pull
+    # full detail for when building hierarchical context for a given task/story key.
+    jira_max_siblings: int = field(default_factory=lambda: _env_int("JIRA_MAX_SIBLINGS", 20))
 
     existing_test_cases_csv: str = field(
         default_factory=lambda: os.getenv("EXISTING_TEST_CASES_CSV", "data/sample_existing_test_cases.csv")

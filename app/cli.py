@@ -18,7 +18,7 @@ from app.export.excel_exporter import export_excel
 from app.export.markdown_exporter import export_markdown
 from app.export.traceability_exporter import export_deliverable_json, export_traceability_json
 from app.ingestion.file_parser import extract_text
-from app.ingestion.jira_client import fetch_jira_context, write_back_test_cases
+from app.ingestion.jira_client import fetch_jira_hierarchy, write_back_test_cases
 from app.pipeline.context import RequirementInput
 from app.pipeline.orchestrator import run_pipeline
 from app.config import settings
@@ -56,6 +56,9 @@ def generate(
     jira_writeback_issue_type: str = typer.Option(
         "Task", help="Jira issue type name to create for each test case (e.g. 'Test' if Xray/Zephyr is installed)."
     ),
+    jira_max_siblings: Optional[int] = typer.Option(
+        None, help="Cap on sibling issues (under the same parent/epic) to pull for context. Default: JIRA_MAX_SIBLINGS env var (20)."
+    ),
     yes: bool = typer.Option(False, "--yes", help="Skip the Jira write-back confirmation prompt."),
 ):
     """Analyze a requirement and generate the full QA deliverable set."""
@@ -68,9 +71,17 @@ def generate(
         raise typer.Exit(code=1)
 
     if jira:
-        console.print(f"[cyan]Fetching Jira issue {jira}...[/cyan]")
-        ctx = fetch_jira_context(jira)
-        requirement = RequirementInput(text=ctx.to_requirement_text(), source_type=f"Jira ({ctx.issue_type})", title=title or ctx.summary)
+        console.print(f"[cyan]Fetching Jira issue {jira} and its parent/sibling context...[/cyan]")
+        hierarchy = fetch_jira_hierarchy(jira, max_siblings=jira_max_siblings)
+        console.print(
+            f"[cyan]  Found {len(hierarchy.ancestors)} parent(s) and {len(hierarchy.siblings)} sibling issue(s).[/cyan]"
+        )
+        requirement = RequirementInput(
+            text=hierarchy.to_requirement_text(),
+            source_type=f"Jira ({hierarchy.primary.issue_type})",
+            title=title or hierarchy.primary.summary,
+            related_jira_keys=hierarchy.all_keys,
+        )
     elif file:
         console.print(f"[cyan]Extracting text from {file}...[/cyan]")
         requirement = RequirementInput(text=extract_text(file), source_type=f"Document ({file.name})", title=title)

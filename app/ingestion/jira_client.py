@@ -61,6 +61,45 @@ class JiraContext:
         return "\n".join(lines)
 
 
+@dataclass
+class JiraHierarchy:
+    """The given issue plus its full parent chain (task -> story -> epic -> initiative)
+    and the sibling issues under its immediate parent, for end-to-end feature context."""
+
+    primary: JiraContext
+    ancestors: List[JiraContext] = field(default_factory=list)  # immediate parent first, then up
+    siblings: List[JiraContext] = field(default_factory=list)
+    siblings_truncated_count: int = 0
+
+    @property
+    def all_keys(self) -> List[str]:
+        """Every Jira key involved in this hierarchy — used to correlate existing test cases."""
+        keys = [self.primary.key] + [a.key for a in self.ancestors] + [s.key for s in self.siblings]
+        return list(dict.fromkeys(keys))
+
+    def to_requirement_text(self) -> str:
+        lines = ["=== TARGET ISSUE (what this task/story actually needs) ===", self.primary.to_requirement_text()]
+
+        if self.ancestors:
+            lines += ["", "=== PARENT CONTEXT (the existing feature this fits into) ==="]
+            for ancestor in self.ancestors:
+                lines += [f"--- {ancestor.issue_type} {ancestor.key} ---", ancestor.to_requirement_text(), ""]
+
+        if self.siblings:
+            lines += ["", "=== RELATED WORK UNDER THE SAME PARENT (already built/being built) ==="]
+            for sibling in self.siblings:
+                lines += [
+                    f"- [{sibling.issue_type}] {sibling.key} ({sibling.status}): {sibling.summary}",
+                    f"  {sibling.description[:400] or '(no description)'}",
+                ]
+                if sibling.acceptance_criteria:
+                    lines.append(f"  AC: {sibling.acceptance_criteria[:300]}")
+            if self.siblings_truncated_count:
+                lines.append(f"- ... and {self.siblings_truncated_count} more sibling issue(s) not shown.")
+
+        return "\n".join(lines)
+
+
 def _adf_to_text(node) -> str:
     """Best-effort flatten of Atlassian Document Format (ADF) to plain text."""
     if node is None:
@@ -93,11 +132,21 @@ def _session() -> requests.Session:
 
 def fetch_jira_context(issue_key: str) -> JiraContext:
     session = _session()
+    data = _fetch_raw_issue(session, issue_key)
+    context = _parse_context(issue_key, data)
+    context.comments = _fetch_comments(session, issue_key)
+    return context
+
+
+def _fetch_raw_issue(session: requests.Session, issue_key: str) -> dict:
     url = f"{settings.jira_base_url.rstrip('/')}/rest/api/3/issue/{issue_key}"
     resp = session.get(url, params={"expand": "renderedFields,names"})
     if resp.status_code != 200:
         raise JiraRequestError(f"Jira request for {issue_key} failed: {resp.status_code} {resp.text[:300]}")
-    data = resp.json()
+    return resp.json()
+
+
+def _parse_context(issue_key: str, data: dict) -> JiraContext:
     fields = data.get("fields", {})
 
     description_raw = fields.get("description")
@@ -132,15 +181,6 @@ def fetch_jira_context(issue_key: str) -> JiraContext:
             )
         )
 
-    comments = []
-    comment_url = f"{settings.jira_base_url.rstrip('/')}/rest/api/3/issue/{issue_key}/comment"
-    comment_resp = session.get(comment_url, params={"maxResults": 10})
-    if comment_resp.status_code == 200:
-        for c in comment_resp.json().get("comments", []):
-            text = _adf_to_text(c.get("body")).strip()
-            if text:
-                comments.append(text)
-
     return JiraContext(
         key=data.get("key", issue_key),
         issue_type=fields.get("issuetype", {}).get("name", "Story"),
@@ -150,8 +190,118 @@ def fetch_jira_context(issue_key: str) -> JiraContext:
         labels=fields.get("labels", []),
         acceptance_criteria=acceptance_criteria,
         linked_issues=linked_issues,
-        comments=comments,
     )
+
+
+def _fetch_comments(session: requests.Session, issue_key: str, limit: int = 10) -> List[str]:
+    comments: List[str] = []
+    comment_url = f"{settings.jira_base_url.rstrip('/')}/rest/api/3/issue/{issue_key}/comment"
+    comment_resp = session.get(comment_url, params={"maxResults": limit})
+    if comment_resp.status_code == 200:
+        for c in comment_resp.json().get("comments", []):
+            text = _adf_to_text(c.get("body")).strip()
+            if text:
+                comments.append(text)
+    return comments
+
+
+def _extract_parent_key(data: dict) -> Optional[str]:
+    """Finds the parent issue key, whether via the standard `parent` field (sub-tasks,
+    and stories/tasks under an Epic in team-managed projects) or the classic "Epic Link"
+    custom field (company-managed projects), whose custom field ID varies per Jira site.
+    """
+    fields = data.get("fields", {})
+    parent = fields.get("parent")
+    if isinstance(parent, dict) and parent.get("key"):
+        return parent["key"]
+
+    names = data.get("names", {})
+    for field_id, human_name in names.items():
+        if human_name.strip().lower() == "epic link":
+            value = fields.get(field_id)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _search_issues(session: requests.Session, jql: str, max_results: int) -> List[dict]:
+    url = f"{settings.jira_base_url.rstrip('/')}/rest/api/3/search"
+    payload = {
+        "jql": jql,
+        "maxResults": max_results,
+        "fields": ["summary", "description", "status", "issuetype", "labels"],
+    }
+    resp = session.post(url, json=payload)
+    if resp.status_code != 200:
+        return []
+    return resp.json().get("issues", [])
+
+
+def _lightweight_context(issue: dict) -> JiraContext:
+    """Builds a JiraContext for a sibling issue from search results (no extra API calls
+    for acceptance criteria/comments/links — those aren't returned by the search endpoint
+    by default, and siblings are meant to be lightweight context, not full detail)."""
+    fields = issue.get("fields", {})
+    description = _adf_to_text(fields.get("description")).strip()
+    return JiraContext(
+        key=issue.get("key", ""),
+        issue_type=fields.get("issuetype", {}).get("name", ""),
+        status=fields.get("status", {}).get("name", ""),
+        summary=fields.get("summary", ""),
+        description=description,
+        labels=fields.get("labels", []),
+    )
+
+
+def fetch_jira_hierarchy(issue_key: str, max_siblings: Optional[int] = None) -> JiraHierarchy:
+    """Fetches the given issue plus its full parent chain and the sibling issues under
+    its immediate parent, so the agent can understand the existing feature this task
+    fits into before generating test cases.
+    """
+    max_siblings = settings.jira_max_siblings if max_siblings is None else max_siblings
+    session = _session()
+
+    primary_raw = _fetch_raw_issue(session, issue_key)
+    primary = _parse_context(issue_key, primary_raw)
+    primary.comments = _fetch_comments(session, issue_key)
+
+    ancestors: List[JiraContext] = []
+    current_raw = primary_raw
+    current_key = issue_key
+    visited = {issue_key}
+    immediate_parent_key: Optional[str] = None
+    for _ in range(5):  # safety cap against cyclic/misconfigured parent data
+        parent_key = _extract_parent_key(current_raw)
+        if not parent_key or parent_key in visited:
+            break
+        visited.add(parent_key)
+        if immediate_parent_key is None:
+            immediate_parent_key = parent_key
+        parent_raw = _fetch_raw_issue(session, parent_key)
+        parent_context = _parse_context(parent_key, parent_raw)
+        parent_context.comments = _fetch_comments(session, parent_key, limit=5)
+        ancestors.append(parent_context)
+        current_raw = parent_raw
+        current_key = parent_key
+
+    siblings: List[JiraContext] = []
+    truncated = 0
+    if immediate_parent_key and max_siblings > 0:
+        results = _search_issues(session, f'parent = "{immediate_parent_key}"', max_siblings + 1)
+        if not results and ancestors and ancestors[0].issue_type.lower() == "epic":
+            # Classic company-managed projects often can't filter children of an Epic via
+            # `parent =`; "Epic Link" is the recognized JQL clause there instead.
+            results = _search_issues(session, f'"Epic Link" = "{immediate_parent_key}"', max_siblings + 1)
+        for issue in results:
+            if issue.get("key") == issue_key:
+                continue
+            siblings.append(_lightweight_context(issue))
+        if len(siblings) > max_siblings:
+            truncated = len(siblings) - max_siblings
+            siblings = siblings[:max_siblings]
+
+    return JiraHierarchy(primary=primary, ancestors=ancestors, siblings=siblings, siblings_truncated_count=truncated)
+
 
 
 def _adf_paragraph(text: str) -> dict:

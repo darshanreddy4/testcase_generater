@@ -23,7 +23,7 @@ from app.export.excel_exporter import export_excel
 from app.export.markdown_exporter import export_markdown
 from app.export.traceability_exporter import export_deliverable_json, export_traceability_json
 from app.ingestion.file_parser import UnsupportedFileTypeError, extract_text
-from app.ingestion.jira_client import JiraNotConfiguredError, JiraRequestError, fetch_jira_context
+from app.ingestion.jira_client import JiraNotConfiguredError, JiraRequestError, fetch_jira_hierarchy
 from app.llm.llm_client import LLMNotConfiguredError
 from app.models.schemas import QADeliverable
 from app.pipeline.context import RequirementInput
@@ -73,11 +73,12 @@ def _build_requirement(
 
     try:
         if jira_key:
-            ctx = fetch_jira_context(jira_key)
+            hierarchy = fetch_jira_hierarchy(jira_key)
             return RequirementInput(
-                text=ctx.to_requirement_text(),
-                source_type=f"Jira ({ctx.issue_type})",
-                title=title or ctx.summary,
+                text=hierarchy.to_requirement_text(),
+                source_type=f"Jira ({hierarchy.primary.issue_type})",
+                title=title or hierarchy.primary.summary,
+                related_jira_keys=hierarchy.all_keys,
             )
         if file:
             suffix = Path(file.filename or "upload.txt").suffix

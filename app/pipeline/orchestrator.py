@@ -59,6 +59,26 @@ StageCallback = Optional[Callable[[str], None]]
 T = TypeVar("T", bound=BaseModel)
 
 
+def _select_existing_titles(
+    existing_test_cases: list, related_jira_keys: list, module_hint: str
+) -> list:
+    """Picks which existing test case titles to show the model as "already covered".
+
+    Prefers precise Jira-key correlation (this task's parent/epic/sibling hierarchy) when
+    available, falling back to module-based matching, then to the full existing suite.
+    """
+    if related_jira_keys:
+        related_keys = set(related_jira_keys)
+        by_jira_key = [
+            tc["title"] for tc in existing_test_cases if tc.get("jira_key") in related_keys and tc.get("title")
+        ]
+        if by_jira_key:
+            return by_jira_key
+    return [tc["title"] for tc in existing_test_cases if tc.get("module") == module_hint and tc.get("title")] or [
+        tc["title"] for tc in existing_test_cases if tc.get("title")
+    ]
+
+
 def _run_parallel(tasks: Dict[str, Callable[[], object]]) -> Dict[str, object]:
     """Runs independent stage callables concurrently and returns their results by name."""
     results: Dict[str, object] = {}
@@ -222,9 +242,9 @@ def run_pipeline(
 
     impacted_modules = [m.module for m in impact_analysis.modules if m.impacted]
     module_hint = impacted_modules[0] if impacted_modules else "General"
-    existing_titles_for_module = [
-        tc["title"] for tc in existing_test_cases if tc.get("module") == module_hint and tc.get("title")
-    ] or [tc["title"] for tc in existing_test_cases if tc.get("title")]
+    existing_titles_for_module = _select_existing_titles(
+        existing_test_cases, requirement.related_jira_keys, module_hint
+    )
     scenarios_json = json.dumps([s.model_dump(mode="json") for s in scenarios_wrapper.scenarios], indent=2)
 
     test_cases_wrapper = stage.run(

@@ -102,3 +102,27 @@ def test_run_pipeline_resumes_from_checkpoint(monkeypatch, tmp_path):
     # Second run with the same run_id (not fresh) should hit checkpoints, not the LLM.
     orchestrator.run_pipeline(requirement, run_id=run_id, fresh=False)
     assert call_count["n"] == first_call_count
+
+
+def test_select_existing_titles_prefers_jira_key_correlation():
+    existing = [
+        {"title": "Verify KYC document upload accepts JPG/PNG/PDF", "module": "KYC", "jira_key": "PROJ-200"},
+        {"title": "Verify login with valid credentials", "module": "Login", "jira_key": "PROJ-100"},
+    ]
+    titles = orchestrator._select_existing_titles(existing, ["PROJ-200", "PROJ-201"], module_hint="Login")
+    assert titles == ["Verify KYC document upload accepts JPG/PNG/PDF"]
+
+
+def test_select_existing_titles_falls_back_to_module_when_no_jira_match():
+    existing = [
+        {"title": "Verify KYC document upload accepts JPG/PNG/PDF", "module": "KYC", "jira_key": "PROJ-200"},
+        {"title": "Verify login with valid credentials", "module": "Login", "jira_key": "PROJ-100"},
+    ]
+    titles = orchestrator._select_existing_titles(existing, ["PROJ-999"], module_hint="Login")
+    assert titles == ["Verify login with valid credentials"]
+
+
+def test_select_existing_titles_falls_back_to_all_when_no_module_match():
+    existing = [{"title": "Verify login with valid credentials", "module": "Login"}]
+    titles = orchestrator._select_existing_titles(existing, [], module_hint="KYC")
+    assert titles == ["Verify login with valid credentials"]

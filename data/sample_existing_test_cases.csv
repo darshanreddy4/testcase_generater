@@ -1,11 +1,11 @@
-test_case_id,module,title,case_type,priority,status,tags
-TC-EXIST-001,Login,Verify login with valid username and password,Positive,P1-Critical,Active,auth;regression
-TC-EXIST-002,Login,Verify login is locked after 5 consecutive failed attempts,Security,P1-Critical,Active,auth;security
-TC-EXIST-003,Registration,Verify duplicate email is rejected during registration,Negative,P2-High,Active,registration
-TC-EXIST-004,KYC,Verify KYC document upload accepts JPG/PNG/PDF under 10MB,Positive,P2-High,Active,kyc;documents
-TC-EXIST-005,KYC,Verify KYC verification fails gracefully when ID document is blurry,Negative,P2-High,Active,kyc
-TC-EXIST-006,Payments,Verify payment is declined for insufficient funds,Negative,P1-Critical,Active,payments
-TC-EXIST-007,Notifications,Verify user receives email notification after successful KYC approval,Positive,P3-Medium,Active,notifications;kyc
-TC-EXIST-008,Profile,Verify user can update profile phone number with OTP verification,Positive,P2-High,Active,profile
-TC-EXIST-009,Admin Portal,Verify admin can view flagged fraud cases queue,Positive,P2-High,Active,admin;fraud
-TC-EXIST-010,Reporting,Verify daily KYC completion report exports to CSV,Positive,P3-Medium,Active,reporting;kyc
+test_case_id,module,title,case_type,priority,status,tags,jira_key
+TC-EXIST-001,Login,Verify login with valid username and password,Positive,P1-Critical,Active,auth;regression,PROJ-100
+TC-EXIST-002,Login,Verify login is locked after 5 consecutive failed attempts,Security,P1-Critical,Active,auth;security,PROJ-100
+TC-EXIST-003,Registration,Verify duplicate email is rejected during registration,Negative,P2-High,Active,registration,PROJ-110
+TC-EXIST-004,KYC,Verify KYC document upload accepts JPG/PNG/PDF under 10MB,Positive,P2-High,Active,kyc;documents,PROJ-200
+TC-EXIST-005,KYC,Verify KYC verification fails gracefully when ID document is blurry,Negative,P2-High,Active,kyc,PROJ-200
+TC-EXIST-006,Payments,Verify payment is declined for insufficient funds,Negative,P1-Critical,Active,payments,PROJ-300
+TC-EXIST-007,Notifications,Verify user receives email notification after successful KYC approval,Positive,P3-Medium,Active,notifications;kyc,PROJ-200
+TC-EXIST-008,Profile,Verify user can update profile phone number with OTP verification,Positive,P2-High,Active,profile,PROJ-400
+TC-EXIST-009,Admin Portal,Verify admin can view flagged fraud cases queue,Positive,P2-High,Active,admin;fraud,PROJ-500
+TC-EXIST-010,Reporting,Verify daily KYC completion report exports to CSV,Positive,P3-Medium,Active,reporting;kyc,PROJ-200

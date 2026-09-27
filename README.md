@@ -26,6 +26,9 @@ strict Pydantic schema so the output is structured data, not just prose.
   test case suite and near-duplicates are dropped, so only genuinely new coverage is added.
 - **Jira write-back** — optionally creates one Jira issue per generated test case,
   linked back to the source story/epic, closing the requirement → test case → Jira loop.
+- **Jira hierarchy awareness** — given a task/story/bug key, walks up its full parent chain
+  (task → story → epic → initiative) and pulls sibling issues under its immediate parent, so
+  the agent understands the existing feature a new task fits into, not just the task in isolation.
 - **Live progress** — the web UI streams per-stage progress over Server-Sent Events
   instead of one long blocking request.
 
@@ -100,8 +103,13 @@ Edit `.env`:
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` — any OpenAI-compatible provider
   (OpenAI, Azure OpenAI via base URL, or a compatible gateway).
 - `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` — optional, needed for `--jira` and Jira write-back.
+- `JIRA_MAX_SIBLINGS` — cap on sibling issues (under the same parent/epic) to pull full
+  detail for when building hierarchical context (default `20`; override per-run with
+  `--jira-max-siblings`).
 - `EXISTING_TEST_CASES_CSV` / `EXISTING_DEFECTS_CSV` — point these at your own exported test
   case / defect CSVs to get real impact & regression matching (samples provided in `data/`).
+  Add an optional `jira_key` column to precisely correlate existing test cases to a
+  story/epic — when the input is `--jira`, this takes priority over module-based matching.
 - `USE_NATIVE_STRUCTURED_OUTPUTS` — default `true`; automatically falls back per-run if the
   model/provider doesn't support it.
 - `CHECKPOINT_DIR` — where per-stage checkpoints are written (default `output/.checkpoints`).
