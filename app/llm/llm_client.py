@@ -11,9 +11,9 @@ import logging
 from typing import Type, TypeVar
 
 import httpx
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, BadRequestError, NotFoundError, OpenAI
 from pydantic import BaseModel, ValidationError
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import settings
 
@@ -30,6 +30,11 @@ _TRANSIENT_ERRORS = (
     APIStatusError,
     httpx.HTTPError,
 )
+
+# BadRequestError/NotFoundError under native structured outputs usually mean "this model/
+# provider doesn't support response_format=json_schema" — a deterministic failure that
+# should fall back immediately rather than burn retries.
+_NATIVE_NON_RETRYABLE = (BadRequestError, NotFoundError)
 
 
 class LLMNotConfiguredError(RuntimeError):
@@ -69,6 +74,9 @@ class LLMClient:
 
     def __init__(self) -> None:
         self._client: OpenAI | None = None
+        # Cached per-instance once we learn whether the provider/model supports the SDK's
+        # native structured-output parsing, so we don't retry a doomed request every call.
+        self._native_structured_supported: bool | None = None
 
     @property
     def client(self) -> OpenAI:
@@ -100,11 +108,37 @@ class LLMClient:
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=1, max=20),
+        retry=retry_if_exception(
+            lambda exc: isinstance(exc, _TRANSIENT_ERRORS) and not isinstance(exc, _NATIVE_NON_RETRYABLE)
+        ),
+        reraise=True,
+    )
+    def _generate_native(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
+        completion = self.client.beta.chat.completions.parse(
+            model=settings.openai_model,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_output_tokens,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format=schema,
+        )
+        message = completion.choices[0].message
+        if message.refusal:
+            raise LLMOutputError(f"Model refused to answer: {message.refusal}")
+        if message.parsed is None:
+            raise LLMOutputError("Model returned no parsed structured output.")
+        return message.parsed
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=1, max=20),
         retry=retry_if_exception_type(_TRANSIENT_ERRORS + (LLMOutputError,)),
         reraise=True,
     )
-    def generate_structured(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
-        """Call the model and validate its response against `schema`, retrying on malformed output."""
+    def _generate_fallback(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
+        """Prompt-based JSON generation, for providers without native structured-output support."""
         schema_json = json.dumps(schema.model_json_schema(), indent=2)
         instructions = (
             f"{user_prompt}\n\n"
@@ -118,6 +152,28 @@ class LLMClient:
         except (json.JSONDecodeError, ValidationError) as exc:
             logger.warning("Structured output validation failed: %s", exc)
             raise
+
+    def generate_structured(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
+        """Call the model and return `schema`-validated data.
+
+        Prefers the SDK's native structured-output parsing (guarantees schema-conforming
+        JSON) and transparently falls back to prompt+regex JSON extraction for providers
+        or models that don't support it.
+        """
+        if settings.use_native_structured_outputs and self._native_structured_supported is not False:
+            try:
+                result = self._generate_native(system_prompt, user_prompt, schema)
+                self._native_structured_supported = True
+                return result
+            except (BadRequestError, NotFoundError) as exc:
+                logger.warning(
+                    "Native structured outputs unsupported by model '%s' (%s); falling back to "
+                    "prompt-based JSON for the rest of this run.",
+                    settings.openai_model,
+                    exc,
+                )
+                self._native_structured_supported = False
+        return self._generate_fallback(system_prompt, user_prompt, schema)
 
     @retry(
         stop=stop_after_attempt(5),

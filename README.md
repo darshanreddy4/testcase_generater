@@ -11,6 +11,24 @@ It embodies a single persona (Senior QA Architect + Principal SDET + Business An
 Test Strategist) across a **12-stage LLM pipeline**, with every stage validated against a
 strict Pydantic schema so the output is structured data, not just prose.
 
+**Enterprise-grade reliability features:**
+
+- **Resumable pipeline** — every stage is checkpointed to disk keyed by a content-derived
+  run ID. If a run is interrupted (network drop, crash, Ctrl-C), re-running the same
+  requirement resumes from the last completed stage instead of starting over.
+- **Parallel stage execution** — independent stages (e.g. feature classification, impact
+  analysis, and gap analysis; or automation/test-data/defect-prevention/production-checklist)
+  run concurrently, cutting wall-clock time.
+- **Native structured outputs** — prefers the OpenAI SDK's built-in structured-output
+  parsing for schema-guaranteed JSON, with automatic fallback to prompt+regex JSON
+  extraction for providers/models that don't support it.
+- **Net-new de-duplication** — generated test cases are compared against your existing
+  test case suite and near-duplicates are dropped, so only genuinely new coverage is added.
+- **Jira write-back** — optionally creates one Jira issue per generated test case,
+  linked back to the source story/epic, closing the requirement → test case → Jira loop.
+- **Live progress** — the web UI streams per-stage progress over Server-Sent Events
+  instead of one long blocking request.
+
 ## What it produces
 
 Every run generates (as Markdown, Excel, and JSON):
@@ -30,33 +48,42 @@ Every run generates (as Markdown, Excel, and JSON):
 - Test Data Requirements
 - Production Validation Checklist
 - Defect Prevention Suggestions
-- Traceability Matrix (Requirement → Scenario → Test Case → Automation Script → Defect)
+- Traceability Matrix (Requirement → Scenario → Test Case → Automation Script → Defect →
+  optionally a created Jira issue key)
+- Duplicate test cases skipped (already covered by your existing suite)
 
 ## Architecture
 
 ```
 app/
-  config.py                 Settings loaded from .env
-  llm/llm_client.py          OpenAI-compatible client with strict JSON-schema validation + retries
+  config.py                  Settings loaded from .env
+  llm/llm_client.py          OpenAI-compatible client: native structured outputs + JSON-schema
+                             fallback, streaming, retries
   prompts/
     system_prompt.py         The QA Architect persona (single source of truth)
     stage_prompts.py         One prompt builder per pipeline stage
   models/schemas.py          Pydantic contract for every deliverable
   ingestion/
     file_parser.py           docx / pdf / xlsx / csv / txt / image(OCR) -> text
-    jira_client.py            Jira Cloud REST v3: story/epic/links/comments -> text
+    jira_client.py           Jira Cloud REST v3: fetch story/epic/links/comments; write back
+                             generated test cases as linked issues
   knowledge/existing_artifacts.py   Loads existing test cases/defects CSVs for impact & regression
-  pipeline/orchestrator.py    Runs all 12 stages, assembles the final QADeliverable
+  pipeline/
+    orchestrator.py          Runs all 12 stages in dependency-ordered parallel waves,
+                             assembles the final QADeliverable
+    checkpoint.py            On-disk per-stage checkpointing for resumable runs
+    dedup.py                 Net-new de-duplication against existing test cases
   export/
-    markdown_exporter.py      Full report as Markdown
-    excel_exporter.py         Multi-sheet Excel workbook (Zephyr/Xray/TestRail-friendly)
-    traceability_exporter.py  JSON exports
-  cli.py                      Typer CLI
-  api.py + web/static/        FastAPI app + minimal browser UI
-data/                         Sample existing test cases & defects CSVs
-tests/                        Unit tests for every non-LLM component (parsers, schemas, exporters,
-                               Jira ADF flattening, and a fully mocked pipeline wiring test)
-main.py                       CLI entrypoint
+    markdown_exporter.py     Full report as Markdown
+    excel_exporter.py        Multi-sheet Excel workbook (Zephyr/Xray/TestRail-friendly)
+    traceability_exporter.py JSON exports
+  cli.py                     Typer CLI (generate, config)
+  api.py + web/static/       FastAPI app: SSE live-progress job endpoints + minimal browser UI
+data/                        Sample existing test cases & defects CSVs
+tests/                       Unit tests for every non-LLM component (parsers, schemas, exporters,
+                              checkpointing, dedup, Jira ADF/write-back, SSE job API, and a fully
+                              mocked pipeline wiring + resume test)
+main.py                      CLI entrypoint
 ```
 
 ## Setup
@@ -72,9 +99,14 @@ Edit `.env`:
 
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` — any OpenAI-compatible provider
   (OpenAI, Azure OpenAI via base URL, or a compatible gateway).
-- `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` — optional, only needed for `--jira`.
+- `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` — optional, needed for `--jira` and Jira write-back.
 - `EXISTING_TEST_CASES_CSV` / `EXISTING_DEFECTS_CSV` — point these at your own exported test
   case / defect CSVs to get real impact & regression matching (samples provided in `data/`).
+- `USE_NATIVE_STRUCTURED_OUTPUTS` — default `true`; automatically falls back per-run if the
+  model/provider doesn't support it.
+- `CHECKPOINT_DIR` — where per-stage checkpoints are written (default `output/.checkpoints`).
+- `DEDUP_SIMILARITY_THRESHOLD` — similarity ratio (0-1) above which a generated test case is
+  treated as a duplicate of an existing one (default `0.88`).
 
 ## Usage
 
@@ -89,10 +121,18 @@ python main.py generate --file requirements/PROJ-1234.docx
 
 # From a Jira issue (story/epic/task/bug) — pulls description, acceptance criteria, linked issues, comments
 python main.py generate --jira PROJ-1234
+
+# Resume an interrupted run (auto-resumes by default if you re-run with the same input;
+# --fresh forces a clean restart, ignoring any checkpoints)
+python main.py generate --text "..." --fresh
+
+# Write generated test cases back into Jira as linked issues under project QA, attached to PROJ-1234
+python main.py generate --jira PROJ-1234 --jira-writeback-project QA --jira-writeback-parent PROJ-1234
 ```
 
 Writes `qa_report.md`, `test_cases.xlsx`, `deliverable.json`, and `traceability.json` into
-`./output` (override with `--output-dir`).
+`./output` (override with `--output-dir`). Run `python main.py config` to check which
+integrations (LLM, Jira) are currently configured.
 
 ### Web UI
 
@@ -100,8 +140,9 @@ Writes `qa_report.md`, `test_cases.xlsx`, `deliverable.json`, and `traceability.
 uvicorn app.api:app --reload
 ```
 
-Open http://127.0.0.1:8000 — paste text, upload a document, or enter a Jira key, then
-download the generated report/Excel/JSON, or read the rendered report inline.
+Open http://127.0.0.1:8000 — paste text, upload a document, or enter a Jira key. Progress
+streams live stage-by-stage over SSE; once done, download the report/Excel/JSON or read the
+rendered report inline.
 
 ## Testing
 
@@ -111,8 +152,9 @@ pytest -q
 ```
 
 Tests cover file parsing, schema validation/round-tripping, the Markdown and Excel
-exporters, existing-artifact CSV loading, Jira ADF-to-text flattening, and full pipeline
-wiring (LLM calls mocked — no API key required to run the suite).
+exporters, existing-artifact CSV loading, Jira ADF-to-text flattening and write-back,
+checkpointing/resume, net-new de-duplication, the SSE job API, and full pipeline wiring
+(LLM calls mocked — no API key required to run the suite).
 
 ## Extending
 

@@ -6,11 +6,12 @@ Requires JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN to be configured.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List, Optional
 
 import requests
 
 from app.config import settings
+from app.models.schemas import TestCase
 
 
 class JiraNotConfiguredError(RuntimeError):
@@ -151,3 +152,94 @@ def fetch_jira_context(issue_key: str) -> JiraContext:
         linked_issues=linked_issues,
         comments=comments,
     )
+
+
+def _adf_paragraph(text: str) -> dict:
+    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+
+def _test_case_description_adf(test_case: TestCase) -> dict:
+    content = []
+    if test_case.preconditions:
+        content.append(_adf_paragraph("Preconditions: " + "; ".join(test_case.preconditions)))
+    if test_case.test_data:
+        content.append(_adf_paragraph(f"Test Data: {test_case.test_data}"))
+    content.append(_adf_paragraph("Steps:"))
+    content.append(
+        {
+            "type": "orderedList",
+            "content": [
+                {"type": "listItem", "content": [_adf_paragraph(step)]} for step in (test_case.steps or ["Not specified"])
+            ],
+        }
+    )
+    content.append(_adf_paragraph(f"Expected Results: {test_case.expected_results or '-'}"))
+    return {"type": "doc", "version": 1, "content": content}
+
+
+def create_test_case_issue(
+    project_key: str,
+    test_case: TestCase,
+    issue_type_name: str = "Task",
+    parent_issue_key: Optional[str] = None,
+) -> str:
+    """Creates a Jira issue for a single generated test case and returns its key.
+
+    `issue_type_name` should match a real issue type in the target project (e.g. "Test"
+    if Xray/Zephyr is installed, otherwise a standard type like "Task"/"Sub-task").
+    """
+    session = _session()
+    payload = {
+        "fields": {
+            "project": {"key": project_key},
+            "summary": f"[{test_case.test_case_id}] {test_case.title}",
+            "issuetype": {"name": issue_type_name},
+            "description": _test_case_description_adf(test_case),
+            "labels": [t.replace(" ", "-") for t in test_case.tags],
+        }
+    }
+    url = f"{settings.jira_base_url.rstrip('/')}/rest/api/3/issue"
+    resp = session.post(url, json=payload)
+    if resp.status_code not in (200, 201):
+        raise JiraRequestError(f"Failed to create issue for {test_case.test_case_id}: {resp.status_code} {resp.text[:300]}")
+    new_key = resp.json()["key"]
+
+    if parent_issue_key:
+        link_payload = {
+            "type": {"name": "Relates"},
+            "inwardIssue": {"key": new_key},
+            "outwardIssue": {"key": parent_issue_key},
+        }
+        link_url = f"{settings.jira_base_url.rstrip('/')}/rest/api/3/issueLink"
+        link_resp = session.post(link_url, json=link_payload)
+        if link_resp.status_code not in (200, 201):
+            raise JiraRequestError(
+                f"Created {new_key} but failed to link it to {parent_issue_key}: "
+                f"{link_resp.status_code} {link_resp.text[:300]}"
+            )
+
+    return new_key
+
+
+def write_back_test_cases(
+    project_key: str,
+    test_cases: List[TestCase],
+    issue_type_name: str = "Task",
+    parent_issue_key: Optional[str] = None,
+) -> "tuple[Dict[str, str], List[str]]":
+    """Creates a Jira issue per test case. Best-effort: a failure on one test case is
+    recorded in `errors` and does not stop the rest from being created.
+
+    Returns (created, errors): a mapping of test_case_id -> created Jira issue key for
+    every test case that succeeded, and a list of error messages for any that failed.
+    """
+    created: Dict[str, str] = {}
+    errors: List[str] = []
+    for test_case in test_cases:
+        try:
+            created[test_case.test_case_id] = create_test_case_issue(
+                project_key, test_case, issue_type_name=issue_type_name, parent_issue_key=parent_issue_key
+            )
+        except JiraRequestError as exc:
+            errors.append(str(exc))
+    return created, errors

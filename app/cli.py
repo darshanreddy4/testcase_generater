@@ -18,7 +18,7 @@ from app.export.excel_exporter import export_excel
 from app.export.markdown_exporter import export_markdown
 from app.export.traceability_exporter import export_deliverable_json, export_traceability_json
 from app.ingestion.file_parser import extract_text
-from app.ingestion.jira_client import fetch_jira_context
+from app.ingestion.jira_client import fetch_jira_context, write_back_test_cases
 from app.pipeline.context import RequirementInput
 from app.pipeline.orchestrator import run_pipeline
 from app.config import settings
@@ -41,6 +41,22 @@ def generate(
     jira: Optional[str] = typer.Option(None, help="Jira issue key, e.g. PROJ-1234."),
     title: Optional[str] = typer.Option(None, help="Optional report title override."),
     output_dir: Path = typer.Option(Path("output"), help="Directory to write report artifacts into."),
+    run_id: Optional[str] = typer.Option(
+        None, help="Override the checkpoint run ID (default: derived from the requirement content)."
+    ),
+    fresh: bool = typer.Option(
+        False, "--fresh", help="Ignore any existing checkpoints for this run and start over."
+    ),
+    jira_writeback_project: Optional[str] = typer.Option(
+        None, help="Jira project key to create one issue per generated test case in (e.g. QA)."
+    ),
+    jira_writeback_parent: Optional[str] = typer.Option(
+        None, help="Optional Jira issue key to link each created test case issue to."
+    ),
+    jira_writeback_issue_type: str = typer.Option(
+        "Task", help="Jira issue type name to create for each test case (e.g. 'Test' if Xray/Zephyr is installed)."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Skip the Jira write-back confirmation prompt."),
 ):
     """Analyze a requirement and generate the full QA deliverable set."""
     sources_provided = sum(bool(x) for x in (text, file, jira))
@@ -73,7 +89,7 @@ def generate(
         def on_stage(message: str) -> None:
             progress.update(task, description=message)
 
-        deliverable = run_pipeline(requirement, on_stage=on_stage)
+        deliverable = run_pipeline(requirement, on_stage=on_stage, run_id=run_id, fresh=fresh)
 
     report_path = output_dir / "qa_report.md"
     excel_path = output_dir / "test_cases.xlsx"
@@ -86,10 +102,42 @@ def generate(
     traceability_path.write_text(export_traceability_json(deliverable), encoding="utf-8")
 
     console.print(f"[green]Done.[/green] {len(deliverable.test_scenarios)} scenarios, {len(deliverable.test_cases)} test cases generated.")
+    if deliverable.duplicate_test_cases_skipped:
+        console.print(f"[yellow]Skipped {len(deliverable.duplicate_test_cases_skipped)} duplicate(s) already covered by existing test cases.[/yellow]")
     console.print(f"  Report:        {report_path}")
     console.print(f"  Excel:         {excel_path}")
     console.print(f"  JSON:          {json_path}")
     console.print(f"  Traceability:  {traceability_path}")
+
+    if jira_writeback_project:
+        if not yes:
+            confirmed = typer.confirm(
+                f"This will create {len(deliverable.test_cases)} new '{jira_writeback_issue_type}' issue(s) in "
+                f"Jira project '{jira_writeback_project}'"
+                + (f", linked to {jira_writeback_parent}" if jira_writeback_parent else "")
+                + ". Continue?"
+            )
+            if not confirmed:
+                console.print("[yellow]Skipped Jira write-back.[/yellow]")
+                raise typer.Exit(code=0)
+
+        console.print(f"[cyan]Creating Jira issues in project {jira_writeback_project}...[/cyan]")
+        created, errors = write_back_test_cases(
+            jira_writeback_project,
+            deliverable.test_cases,
+            issue_type_name=jira_writeback_issue_type,
+            parent_issue_key=jira_writeback_parent,
+        )
+        for link in deliverable.traceability_matrix:
+            if link.test_case_ref in created:
+                link.jira_test_issue_ref = created[link.test_case_ref]
+        traceability_path.write_text(export_traceability_json(deliverable), encoding="utf-8")
+
+        console.print(f"[green]Created {len(created)}/{len(deliverable.test_cases)} Jira issue(s).[/green]")
+        if errors:
+            console.print(f"[red]{len(errors)} failed:[/red]")
+            for err in errors:
+                console.print(f"  - {err}")
 
 
 if __name__ == "__main__":

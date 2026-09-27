@@ -60,12 +60,14 @@ def fake_generate_text(system_prompt, user_prompt):
     return "This is a generated executive summary."
 
 
-def test_run_pipeline_wires_all_stages_together(monkeypatch):
+def test_run_pipeline_wires_all_stages_together(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator.llm_client, "generate_structured", fake_generate_structured)
     monkeypatch.setattr(orchestrator.llm_client, "generate_text", fake_generate_text)
 
     requirement = RequirementInput(text="Users should upload a driver's license.", source_type="Text")
-    deliverable = orchestrator.run_pipeline(requirement)
+    # fresh=True + a unique run_id avoids leftover checkpoints from other test runs masking
+    # the mocked calls below.
+    deliverable = orchestrator.run_pipeline(requirement, run_id=f"pytest-{tmp_path.name}", fresh=True)
 
     assert deliverable.feature_classification.category == FeatureCategory.NEW_FEATURE
     assert len(deliverable.test_scenarios) == 1
@@ -76,3 +78,27 @@ def test_run_pipeline_wires_all_stages_together(monkeypatch):
     assert len(deliverable.traceability_matrix) == 2
     tc1_link = next(link for link in deliverable.traceability_matrix if link.test_case_ref == "TC-001")
     assert tc1_link.scenario_ref == "SC-001"
+
+
+def test_run_pipeline_resumes_from_checkpoint(monkeypatch, tmp_path):
+    """A second run with the same run_id should reuse checkpointed stages instead of
+    re-invoking the (mocked) LLM for them."""
+    call_count = {"n": 0}
+
+    def counting_generate_structured(system_prompt, user_prompt, schema):
+        call_count["n"] += 1
+        return fake_generate_structured(system_prompt, user_prompt, schema)
+
+    monkeypatch.setattr(orchestrator.llm_client, "generate_structured", counting_generate_structured)
+    monkeypatch.setattr(orchestrator.llm_client, "generate_text", fake_generate_text)
+
+    requirement = RequirementInput(text="Users should upload a driver's license.", source_type="Text")
+    run_id = f"pytest-resume-{tmp_path.name}"
+
+    orchestrator.run_pipeline(requirement, run_id=run_id, fresh=True)
+    first_call_count = call_count["n"]
+    assert first_call_count > 0
+
+    # Second run with the same run_id (not fresh) should hit checkpoints, not the LLM.
+    orchestrator.run_pipeline(requirement, run_id=run_id, fresh=False)
+    assert call_count["n"] == first_call_count

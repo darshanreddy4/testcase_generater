@@ -129,13 +129,27 @@ def test_scenarios_prompt(requirement_text: str, requirement_summary: str, impac
     )
 
 
-def test_cases_prompt(requirement_text: str, requirement_summary: str, scenarios_json: str, module_hint: str) -> str:
+def test_cases_prompt(
+    requirement_text: str,
+    requirement_summary: str,
+    scenarios_json: str,
+    module_hint: str,
+    existing_test_case_titles: Optional[List[str]] = None,
+) -> str:
+    existing_block = ""
+    if existing_test_case_titles:
+        titles = "\n".join(f"- {t}" for t in existing_test_case_titles[:100])
+        existing_block = (
+            "\nThese test cases ALREADY EXIST for this module — do NOT regenerate equivalent "
+            f"coverage for them; only produce net-new test cases:\n{titles}\n"
+        )
     return (
         "STEP 8 — Detailed Test Cases.\n"
         f"Requirement:\n\"\"\"\n{requirement_text}\n\"\"\"\n"
         f"Summary: {requirement_summary}\n"
         f"Primary module: {module_hint}\n"
-        f"Approved test scenarios to cover:\n{scenarios_json}\n\n"
+        f"Approved test scenarios to cover:\n{scenarios_json}\n"
+        f"{existing_block}\n"
         "For EACH scenario, produce one or more detailed test cases. Every test case must include: "
         "test_case_id (e.g. 'TC-001', unique, sequential), title, scenario_ref (the scenario_id it "
         "covers), case_type (Positive/Negative/Alternate Flow/Boundary/Edge Case/Security/"
@@ -146,7 +160,8 @@ def test_cases_prompt(requirement_text: str, requirement_summary: str, scenarios
         "You MUST include a healthy mix of case_type values — never only Positive. Include boundary "
         "values, invalid/negative inputs, security abuse cases (auth bypass, injection, session, "
         "sensitive data exposure) where relevant, and accessibility checks for any UI. Avoid "
-        "duplicate or overlapping test cases."
+        "duplicate or overlapping test cases, and avoid duplicating anything already covered by "
+        "the existing test cases listed above."
     )
 
 

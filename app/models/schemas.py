@@ -239,6 +239,7 @@ class TraceabilityLink(BaseModel):
     test_case_ref: Optional[str] = None
     automation_script_ref: Optional[str] = None
     defect_ref: Optional[str] = None
+    jira_test_issue_ref: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +285,7 @@ class QADeliverable(BaseModel):
     defect_prevention_suggestions: List[DefectPreventionItem] = Field(default_factory=list)
     questions_for_product_owner: List[ProductOwnerQuestion] = Field(default_factory=list)
     traceability_matrix: List[TraceabilityLink] = Field(default_factory=list)
+    duplicate_test_cases_skipped: List[str] = Field(default_factory=list)
 
     def test_cases_by_type(self, case_type: CaseType) -> List[TestCase]:
         return [tc for tc in self.test_cases if tc.case_type == case_type]
